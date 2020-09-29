@@ -12,14 +12,14 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "Python: LoadViewer",
+            "name": "Python: serialPlotter",
             "type": "python",
             "request": "launch",
-            "program": "loadviewer.py",
+            "program": "serialPlotter.py",
             "console": "integratedTerminal",
             "args": [
                 "-f",
-                "./outputs/out_2020-09-29_17-43-55_0.mat"
+                "outputs/out_2020-09-29_22-37-10_0.mat"
             ]
         }
     ]

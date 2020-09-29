@@ -1,36 +1,46 @@
+from operator import truediv
 import time
 import serial
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import MultiCursor
 import matplotlib.dates as mdates
 import datetime 
+import numpy as np
 import os
 import glob
 import scipy.io
 import argparse
+from bisect import bisect_left
 
 class SerialPlotter():
     def __init__(self, args) -> None:
-        plt.style.use('fivethirtyeight')
+        self.ser = serial.Serial(
+            port='COM13',
+            baudrate=9600
+        )
 
+        self.ser.isOpen()
+
+        plt.style.use('bmh')
         self.fig = plt.figure()
 
-        graph_keys = [
+        self.graph_keys = [
             "voltage",
             "current",
             "power"
         ]
 
-        graph_unit = [
+        self.graph_unit = [
             "V",
             "A",
             "W"
         ]
 
-        color = [
+        self.graph_color = [
             "blue",
             "red",
-            "yellow"
+            "orange"
         ]
 
         self.datastore = {
@@ -43,39 +53,58 @@ class SerialPlotter():
         }
 
         if(args.file):
-            data = self.load_mat(args.file[0])
+            self.data = self.load_mat(args.file[0])
             for key in self.datastore:
-                self.datastore[key] = data[key][0].tolist()
+                self.datastore[key] = self.data[key][0].tolist()
 
+        while len(self.datastore['time']) == 0:
+            self.parseSerial()
+
+        self.lasttriggered = 0
         self.axis = []
         self.line = []
+        self.data = []
+        self.datalegends = []
 
-        for i, key in enumerate(graph_keys):
-            self.axis.append(self.fig.add_subplot(3,1,i+1))
-            self.axis[-1].legend(loc=1)
-            self.axis[-1].xaxis_date()
-            self.axis[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            self.axis[-1].set_ylabel(graph_unit[i])
-            line, = self.axis[-1].plot(self.datastore['time'], self.datastore[key],'-',  linewidth=1, color=color[i])
-            line.set_label(key)
+        self.data.append(self.datastore['time'])
+
+        for i, key in enumerate(self.graph_keys):
+            if(i>0):        
+                # all plots share the same x axes, thus during zooming and panning 
+                # we will see always the same x section of each graph
+                ax = plt.subplot(3, 1, i+1, sharex=ax)             
+            else:
+                ax = plt.subplot(3, 1, i+1)
+            #ax.legend(loc=1)
+            ax.xaxis_date()
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            ax.set_ylabel(self.graph_unit[i])
+
+            self.axis.append(ax)
+            line, = ax.plot(self.datastore['time'], self.datastore[key],'-', linewidth=1, color=self.graph_color[i])
+
+            self.data.append(self.datastore[key])
+            #line.set_label(key)
             self.line.append(line)
+
+        self.props = dict(boxstyle='round', edgecolor='black', facecolor='wheat', alpha=1.5)
+
+        self.multi = MultiCursor(self.fig.canvas, self.axis , color='g', lw=1)
+
+        self.fig.canvas.mpl_connect('motion_notify_event', self.show_Legend)
 
         self.axis[2].set_xlabel("Time")
         self.axis[0].set_title('Power Chart')
-
-        self.ser = serial.Serial(
-            port='COM13',
-            baudrate=9600
-        )
-
-        self.ser.isOpen()
 
         os.chdir("./outputs")
         self.setFileName()
 
         ani = FuncAnimation(plt.gcf(), self.animate, 1000)
-        plt.tight_layout()
+        
         plt.show()
+
+        # exiting
+        self.save_mat()
 
     def setFileName(self):
         self.files= []
@@ -93,21 +122,116 @@ class SerialPlotter():
         try:
             print(os.getcwd() + '\\' + self.filename)
             scipy.io.savemat(os.getcwd() + '\\' + self.filename, self.datastore)
-            self.success_message('Saved data to out.mat')
         except Exception as e:
-            self.error_message('Saving Data ' + str(e))
+            print('Saving Data ' + str(e))
 
     def load_mat(self, filename):
         mat = scipy.io.loadmat(filename)
         return mat
 
+    def take_closest(self, myList, myNumber):
+        """
+        Assumes myList is sorted. Returns closest value to myNumber.
+
+        If two numbers are equally close, return the smallest number.
+        """
+        pos = bisect_left(myList, myNumber)
+        if pos == 0:
+            return myList[0]
+        if pos == len(myList):
+            return myList[-1]
+        before = myList[pos - 1]
+        after = myList[pos]
+        if after - myNumber < myNumber - before:
+            return after, pos
+        else:
+            return before, pos-1
+
+
+    def show_Legend(self, event): 
+        #get mouse coordinates
+        mouseXdata = event.xdata
+
+        #10 Hz cooldown
+        if(time.time() - self.lasttriggered < 0.5):
+            return
+        
+        self.lasttriggered = time.time()
+
+        if(mouseXdata == None):
+            return
+
+        # the value of the closest data point to the current mouse position shall be shown
+        closestXValue, posClosestXvalue = self.take_closest(self.data[0], mouseXdata)
+
+
+        # for d in self.datalegends:
+        #     # this remove is required because otherwise after a resizing of the window there is 
+        #     # an artifact of the last label, which lies behind the new one
+        #     d.remove()
+            
+        i = 1
+        for ax in self.axis:
+            datalegend = ax.text(1.05, 0.5, round(self.data[i][posClosestXvalue],2),  fontsize=10,
+                                        verticalalignment='top', bbox=self.props, transform=ax.transAxes)               
+            ax.draw_artist(datalegend)
+            self.datalegends.append(datalegend)
+            i +=1
+
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
+
+
+
     def animate(self, i):
         
+        if(not self.parseSerial()):
+            return
+
+        # if counter >40:
+        #     '''
+        #     This helps in keeping the graph fresh and refreshes values after every 40 timesteps
+        #     '''
+        #     x_values.pop(0)
+        #     y_values.pop(0)
+        #     #counter = 0
+        # clears the values of the graph
+
+        # for i, key in enumerate(self.graph_keys):
+        #     self.axis[i].plot(self.datastore['time'], self.datastore[key],'-', label=self.graph_keys[i],  linewidth=1, color=self.graph_color[i])
+        
+        for i in range(3):
+            self.line.pop(0).remove()
+
+        for i, key in enumerate(self.graph_keys):
+            line, = self.axis[i].plot(self.datastore['time'], self.datastore[key],'-',  linewidth=1, color=self.graph_color[i])
+
+            self.line.append(line)
+        # for i, l in enumerate(self.line):
+        #     l.set_data(self.datastore['time'], self.datastore[self.graph_keys[i]])
+
+        self.fig.canvas.draw()
+        # self.fig.canvas.flush_events()
+
+
+        time.sleep(.25) # keep refresh rate of 0.25 seconds
+
+        if len(self.datastore['time']) != 0 and len(self.datastore['time'])%60 == 0:
+            self.save_mat()
+            self.counter = 0
+
+    def parseSerial(self):
         out = []    
         while self.ser.inWaiting() > 0:
             out.append(self.ser.read(1))
 
-        if(len(out) > 32 and out[0] == b'\xff'):
+        if(len(out) > 0):
+            while out[0] != b'\xff':
+                out.pop(0)
+                if(len(out) == 0):
+                    break
+        if(len(out) >= 32 and out[0] == b'\xff'):
             # for i in range(len(out)):
             #     print(str(i)+"\t", end = '')
             # print("")
@@ -122,14 +246,6 @@ class SerialPlotter():
             # for i in range(len(out)//2-1):
             #     raw = out[i*2+1] + out[i*2+2] 
             #     print(int.from_bytes(raw, byteorder="big"), end = ',\t')
-            self.datastore['voltage'].append(int.from_bytes(out[5] + out[6], byteorder="big") * 1E-1)
-            self.datastore['current'].append(int.from_bytes(out[8] + out[9], byteorder="big") * 1E-3)
-            self.datastore['power'].append(self.datastore['voltage'][-1] * self.datastore['current'][-1])
-            if(len(self.datastore['capacity']) != 0):
-                oldcap = self.datastore['capacity'][-1]
-            else:
-                oldcap = 0
-            self.datastore['capacity'].append(oldcap + self.datastore['power'][-1] * 1)
 
             zero = datetime.datetime(2000,1,1)
             seconds = int.from_bytes(out[29], byteorder="big")
@@ -141,35 +257,25 @@ class SerialPlotter():
             zero = mdates.date2num(zero)
             tim = mdates.date2num(tim)-zero
 
+            if(self.datastore['time'][-1] == tim):
+                return False
+
             self.datastore['time'].append(tim)
+
+            self.datastore['voltage'].append(int.from_bytes(out[5] + out[6], byteorder="big") * 1E-1)
+            self.datastore['current'].append(int.from_bytes(out[8] + out[9], byteorder="big") * 1E-3)
+            self.datastore['power'].append(self.datastore['voltage'][-1] * self.datastore['current'][-1])
+            if(len(self.datastore['capacity']) != 0):
+                oldcap = self.datastore['capacity'][-1]
+            else:
+                oldcap = 0
+            self.datastore['capacity'].append(oldcap + self.datastore['power'][-1] * 1)
+
+
             self.datastore['temperature'].append(int.from_bytes(out[25], byteorder="big"))
 
-        # if counter >40:
-        #     '''
-        #     This helps in keeping the graph fresh and refreshes values after every 40 timesteps
-        #     '''
-        #     x_values.pop(0)
-        #     y_values.pop(0)
-        #     #counter = 0
-        # clears the values of the graph
-
-        graph_keys = [
-            "voltage",
-            "current",
-            "power"
-        ]
-
-        for i, l in enumerate(self.line):
-            l.set_data(self.datastore['time'], self.datastore[graph_keys[i]])
-            plt.draw()
-
-
-        time.sleep(.25) # keep refresh rate of 0.25 seconds
-
-        if len(self.datastore['time']) != 0 and len(self.datastore['time'])%60 == 0:
-            print("Saved: " + os.getcwd() + '\\' + self.filename)
-            scipy.io.savemat(os.getcwd() + '\\' + self.filename, self.datastore)
-            self.counter = 0
+            return True
+        return False
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('-f', "--file", dest="file", type=str, help='.mat filename', nargs=1)
