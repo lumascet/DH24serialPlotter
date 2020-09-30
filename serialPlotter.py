@@ -49,6 +49,7 @@ class SerialPlotter():
             'current' : [],
             'power' : [],
             'capacity': [],
+            'energy' : [],
             'temperature' : []
         }
 
@@ -257,7 +258,7 @@ class SerialPlotter():
             zero = mdates.date2num(zero)
             tim = mdates.date2num(tim)-zero
 
-            if(self.datastore['time'][-1] == tim):
+            if(len(self.datastore['time'])>0 and self.datastore['time'][-1] == tim):
                 return False
 
             self.datastore['time'].append(tim)
@@ -267,9 +268,12 @@ class SerialPlotter():
             self.datastore['power'].append(self.datastore['voltage'][-1] * self.datastore['current'][-1])
             if(len(self.datastore['capacity']) != 0):
                 oldcap = self.datastore['capacity'][-1]
+                oldegy = self.datastore['energy'][-1]
             else:
                 oldcap = 0
-            self.datastore['capacity'].append(oldcap + self.datastore['power'][-1] * 1)
+                oldegy = 0
+            self.datastore['capacity'].append(oldcap + self.datastore['current'][-1] / 3600)
+            self.datastore['energy'].append(oldegy + self.datastore['power'][-1] / 3600)
 
 
             self.datastore['temperature'].append(int.from_bytes(out[25], byteorder="big"))
