@@ -15,8 +15,14 @@ from bisect import bisect_left
 
 class SerialPlotter():
     def __init__(self, args) -> None:
+
+        port = 'COM7'
+
+        if(args.port):
+            port = args.port[0]
+
         self.ser = serial.Serial(
-            port='COM13',
+            port=port,
             baudrate=9600
         )
 
@@ -283,6 +289,7 @@ class SerialPlotter():
 
 parser = argparse.ArgumentParser(description='Process some integers.')
 parser.add_argument('-f', "--file", dest="file", type=str, help='.mat filename', nargs=1)
+parser.add_argument('-p', "--port", dest="port", type=str, help='com port', nargs=1)
 # parser.add_argument('-p', '--plot_type',dest='plot_type', type=str, nargs=1, choices=plot_type)
 # parser.add_argument('-c', '--compensate',dest='compensate', type=str, nargs=4, metavar=('marker_1_start', 'marker_1_stop', 'marker_2_start', 'marker_2_stop'))
 # parser.add_argument('-f', '--filter',dest='filter', action='store_const', const=True)
